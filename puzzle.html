@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>拼豆</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Microsoft JhengHei", sans-serif;
+    background: #1e1f26;
+    color: #e8e8ee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .bar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  button {
+    background: #4f6df5;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { background: #3f5ae0; }
+  #status { font-size: 14px; color: #9aa0b5; }
+  #timer { font-size: 14px; color: #9aa0b5; font-variant-numeric: tabular-nums; }
+  #board {
+    position: relative;
+    background: #2a2c37;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.4);
+    touch-action: none;
+  }
+  /* 目標區的淡淡輪廓 */
+  .slot {
+    position: absolute;
+    border: 1px dashed rgba(255,255,255,.12);
+    box-sizing: border-box;
+    pointer-events: none;   /* 不攔截滑鼠，否則會蓋住底下的拼圖塊 */
+  }
+  .piece {
+    position: absolute;
+    background-image: url("arctan.png");
+    background-repeat: no-repeat;
+    cursor: grab;
+    box-shadow: 0 3px 8px rgba(0,0,0,.5);
+    border: 1px solid rgba(0,0,0,.3);
+    user-select: none;
+    -webkit-user-drag: none;
+    z-index: 2;             /* 未拼好的塊 */
+  }
+  .piece.dragging {
+    cursor: grabbing;
+    box-shadow: 0 12px 24px rgba(0,0,0,.6);
+    z-index: 5;             /* 拖曳中的塊在最上層 */
+  }
+  .piece.locked {
+    box-shadow: none;
+    border-color: transparent;
+    cursor: default;
+    pointer-events: none;   /* 拼好後不再攔截滑鼠，讓底下未拼的塊可被拖曳 */
+    z-index: 1;             /* 已拼好的塊沉到未拼好的塊底下 */
+  }
+  #win {
+    position: absolute;
+    inset: 0;
+    z-index: 10;          /* 疊在所有拼圖塊之上，否則文字會被蓋住 */
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 8px;
+    background: rgba(0,0,0,.55);
+    border-radius: 10px;
+    font-size: 40px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 2px 10px rgba(0,0,0,.7);
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <h1>拼豆</h1>
+  <div class="bar">
+    <button id="shuffle">重新打亂</button>
+    <span id="status"></span>
+    <span id="timer">⏱ 00:00</span>
+  </div>
+  <div id="board">
+    <div id="win">完成！🎉</div>
+  </div>
+
+<script>
+const COLS = 3, ROWS = 4;          // 3 × 4 = 12 塊
+const IMG_SRC = "arctan.png";
+const SNAP = 28;                    // 吸附距離(像素)
+
+const board = document.getElementById("board");
+const statusEl = document.getElementById("status");
+const winEl = document.getElementById("win");
+const timerEl = document.getElementById("timer");
+let pieces = [];
+let pw, ph, boardW, boardH;
+
+// ---- 計時 ----
+let startTime = null, timerInterval = null;
+function fmt(ms) {
+  const s = Math.floor(ms / 1000);
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return mm + ":" + ss;
+}
+function resetTimer() {
+  clearInterval(timerInterval);
+  timerInterval = null;
+  startTime = null;
+  timerEl.textContent = "⏱ 00:00";
+}
+function startTimer() {
+  if (startTime !== null) return;      // 只在第一次拖曳時啟動
+  startTime = performance.now();
+  timerInterval = setInterval(() => {
+    timerEl.textContent = "⏱ " + fmt(performance.now() - startTime);
+  }, 250);
+}
+function stopTimer() {
+  clearInterval(timerInterval);
+  timerInterval = null;
+  return startTime === null ? 0 : performance.now() - startTime;
+}
+
+const img = new Image();
+img.src = IMG_SRC;
+img.onload = () => {
+  // 依視窗大小把圖等比縮到最大顯示尺寸
+  const maxW = Math.min(window.innerWidth - 60, 760);
+  const scale = maxW / img.naturalWidth;
+  boardW = Math.round(img.naturalWidth * scale);
+  boardH = Math.round(img.naturalHeight * scale);
+  // 板子留出散落空間 (右下額外邊界)
+  const PAD = 90;
+  board.style.width = (boardW + PAD * 2) + "px";
+  board.style.height = (boardH + PAD * 2) + "px";
+  board.dataset.pad = PAD;
+  pw = boardW / COLS;
+  ph = boardH / ROWS;
+  buildPuzzle(PAD);
+};
+
+function buildPuzzle(PAD) {
+  // 清掉舊的
+  pieces.forEach(p => p.el.remove());
+  document.querySelectorAll(".slot").forEach(s => s.remove());
+  pieces = [];
+  winEl.style.display = "none";
+
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      // 目標輪廓
+      const slot = document.createElement("div");
+      slot.className = "slot";
+      slot.style.left = (PAD + c * pw) + "px";
+      slot.style.top = (PAD + r * ph) + "px";
+      slot.style.width = pw + "px";
+      slot.style.height = ph + "px";
+      board.appendChild(slot);
+
+      // 拼圖塊
+      const el = document.createElement("div");
+      el.className = "piece";
+      el.style.width = pw + "px";
+      el.style.height = ph + "px";
+      el.style.backgroundSize = boardW + "px " + boardH + "px";
+      el.style.backgroundPosition = (-c * pw) + "px " + (-r * ph) + "px";
+      board.appendChild(el);
+
+      const piece = {
+        el, row: r, col: c,
+        targetX: PAD + c * pw,
+        targetY: PAD + r * ph,
+        locked: false
+      };
+      pieces.push(piece);
+      attachDrag(piece);
+    }
+  }
+  scatter(PAD);
+  updateStatus();
+}
+
+function scatter(PAD) {
+  pieces.forEach(p => {
+    const x = Math.random() * (boardW + PAD * 2 - pw);
+    const y = Math.random() * (boardH + PAD * 2 - ph);
+    setPos(p, x, y);
+    p.locked = false;
+    p.el.classList.remove("locked");
+  });
+}
+
+function setPos(p, x, y) {
+  p.x = x; p.y = y;
+  p.el.style.left = x + "px";
+  p.el.style.top = y + "px";
+}
+
+function attachDrag(p) {
+  let dx, dy, active = false;
+
+  const down = (e) => {
+    if (p.locked) return;
+    startTimer();
+    active = true;
+    const pt = getPoint(e);
+    dx = pt.x - p.x;
+    dy = pt.y - p.y;
+    p.el.classList.add("dragging");
+    // 移到最上層
+    board.appendChild(p.el);
+    e.preventDefault();
+  };
+  const move = (e) => {
+    if (!active) return;
+    const pt = getPoint(e);
+    setPos(p, pt.x - dx, pt.y - dy);
+  };
+  const up = () => {
+    if (!active) return;
+    active = false;
+    p.el.classList.remove("dragging");
+    // 檢查吸附
+    if (Math.abs(p.x - p.targetX) < SNAP && Math.abs(p.y - p.targetY) < SNAP) {
+      setPos(p, p.targetX, p.targetY);
+      p.locked = true;
+      p.el.classList.add("locked");
+      updateStatus();
+      checkWin();
+    }
+  };
+
+  p.el.addEventListener("mousedown", down);
+  p.el.addEventListener("touchstart", down, {passive:false});
+  window.addEventListener("mousemove", move);
+  window.addEventListener("touchmove", move, {passive:false});
+  window.addEventListener("mouseup", up);
+  window.addEventListener("touchend", up);
+}
+
+function getPoint(e) {
+  const rect = board.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function updateStatus() {
+  const done = pieces.filter(p => p.locked).length;
+  statusEl.textContent = `已完成 ${done} / ${pieces.length}`;
+}
+
+function checkWin() {
+  if (pieces.every(p => p.locked)) {
+    const elapsed = stopTimer();
+    winEl.innerHTML = "完成！🎉<br><span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
+    winEl.style.display = "flex";
+  }
+}
+
+document.getElementById("shuffle").addEventListener("click", () => {
+  const PAD = +board.dataset.pad;
+  winEl.style.display = "none";
+  scatter(PAD);
+  updateStatus();
+  resetTimer();
+});
+</script>
+</body>
+</html>
