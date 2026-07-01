@@ -17,11 +17,13 @@
     min-height: 100vh;
     padding: 20px;
   }
-  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 10px; }
   .bar {
     display: flex;
     gap: 12px;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
     margin-bottom: 16px;
   }
   button {
@@ -34,6 +36,9 @@
     cursor: pointer;
   }
   button:hover { background: #3f5ae0; }
+  .modebtn { background: #3a3d4d; }
+  .modebtn:hover { background: #474b5f; }
+  .modebtn.active { background: #4f6df5; }
   #status { font-size: 14px; color: #9aa0b5; }
   #timer { font-size: 14px; color: #9aa0b5; font-variant-numeric: tabular-nums; }
   #board {
@@ -43,7 +48,8 @@
     box-shadow: 0 10px 40px rgba(0,0,0,.4);
     touch-action: none;
   }
-  /* 目標區的淡淡輪廓 */
+
+  /* ---------- 拼圖模式 ---------- */
   .slot {
     position: absolute;
     border: 1px dashed rgba(255,255,255,.12);
@@ -70,13 +76,41 @@
     box-shadow: none;
     border-color: transparent;
     cursor: default;
-    pointer-events: none;   /* 拼好後不再攔截滑鼠，讓底下未拼的塊可被拖曳 */
+    pointer-events: none;   /* 拼好後不再攔截滑鼠 */
     z-index: 1;             /* 已拼好的塊沉到未拼好的塊底下 */
   }
+
+  /* ---------- 華容道模式 ---------- */
+  .tile {
+    position: absolute;
+    background-image: url("arctan.png");
+    background-repeat: no-repeat;
+    border: 1px solid rgba(0,0,0,.35);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-drag: none;
+    transition: left .13s ease, top .13s ease;
+  }
+  #board.no-anim .tile { transition: none !important; }
+  .tile .num {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    min-width: 20px;
+    padding: 1px 5px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    background: rgba(0,0,0,.55);
+    border-radius: 5px;
+    pointer-events: none;
+  }
+
   #win {
     position: absolute;
     inset: 0;
-    z-index: 10;          /* 疊在所有拼圖塊之上，否則文字會被蓋住 */
+    z-index: 10;          /* 疊在所有拼圖塊之上 */
     display: none;
     flex-direction: column;
     align-items: center;
@@ -96,7 +130,9 @@
 <body>
   <h1>拼豆</h1>
   <div class="bar">
-    <button id="shuffle">重新打亂</button>
+    <button class="modebtn active" id="mode-jigsaw">拼圖模式</button>
+    <button class="modebtn" id="mode-slide">華容道模式</button>
+    <button id="action">重新打亂</button>
     <span id="status"></span>
     <span id="timer">⏱ 00:00</span>
   </div>
@@ -105,18 +141,17 @@
   </div>
 
 <script>
-const COLS = 3, ROWS = 4;          // 3 × 4 = 12 塊
 const IMG_SRC = "arctan.png";
-const SNAP = 28;                    // 吸附距離(像素)
 
 const board = document.getElementById("board");
 const statusEl = document.getElementById("status");
 const winEl = document.getElementById("win");
 const timerEl = document.getElementById("timer");
-let pieces = [];
-let pw, ph, boardW, boardH;
 
-// ---- 計時 ----
+let mode = "jigsaw";     // "jigsaw" | "slide"
+let fitW, fitH;          // 圖片顯示尺寸
+
+// ---------- 計時 ----------
 let startTime = null, timerInterval = null;
 function fmt(ms) {
   const s = Math.floor(ms / 1000);
@@ -131,7 +166,7 @@ function resetTimer() {
   timerEl.textContent = "⏱ 00:00";
 }
 function startTimer() {
-  if (startTime !== null) return;      // 只在第一次拖曳時啟動
+  if (startTime !== null) return;      // 只在第一次操作時啟動
   startTime = performance.now();
   timerInterval = setInterval(() => {
     timerEl.textContent = "⏱ " + fmt(performance.now() - startTime);
@@ -143,34 +178,52 @@ function stopTimer() {
   return startTime === null ? 0 : performance.now() - startTime;
 }
 
+function showWin(msg) {
+  const elapsed = stopTimer();
+  winEl.innerHTML = msg + "<br><span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
+  winEl.style.display = "flex";
+}
+
+// ---------- 載入圖片 ----------
 const img = new Image();
 img.src = IMG_SRC;
 img.onload = () => {
-  // 依視窗大小把圖等比縮到最大顯示尺寸
-  const maxW = Math.min(window.innerWidth - 60, 760);
+  const maxW = Math.min(window.innerWidth - 60, 700);
   const scale = maxW / img.naturalWidth;
-  boardW = Math.round(img.naturalWidth * scale);
-  boardH = Math.round(img.naturalHeight * scale);
-  // 板子留出散落空間 (右下額外邊界)
-  const PAD = 90;
-  board.style.width = (boardW + PAD * 2) + "px";
-  board.style.height = (boardH + PAD * 2) + "px";
-  board.dataset.pad = PAD;
-  pw = boardW / COLS;
-  ph = boardH / ROWS;
-  buildPuzzle(PAD);
+  fitW = Math.round(img.naturalWidth * scale);
+  fitH = Math.round(img.naturalHeight * scale);
+  startMode(mode);
 };
 
-function buildPuzzle(PAD) {
-  // 清掉舊的
-  pieces.forEach(p => p.el.remove());
-  document.querySelectorAll(".slot").forEach(s => s.remove());
-  pieces = [];
+function clearBoard() {
+  board.querySelectorAll(".piece, .slot, .tile").forEach(e => e.remove());
   winEl.style.display = "none";
+  resetTimer();
+}
 
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      // 目標輪廓
+function startMode(m) {
+  mode = m;
+  document.getElementById("mode-jigsaw").classList.toggle("active", m === "jigsaw");
+  document.getElementById("mode-slide").classList.toggle("active", m === "slide");
+  clearBoard();
+  if (m === "jigsaw") buildJigsaw();
+  else buildSlide();
+}
+
+/* =======================================================
+   拼圖模式：3 × 4 = 12 塊，自由拖曳、靠近吸附
+   ======================================================= */
+const J_COLS = 3, J_ROWS = 4, SNAP = 28, PAD = 90;
+let jPieces = [];
+
+function buildJigsaw() {
+  jPieces = [];
+  const pw = fitW / J_COLS, ph = fitH / J_ROWS;
+  board.style.width = (fitW + PAD * 2) + "px";
+  board.style.height = (fitH + PAD * 2) + "px";
+
+  for (let r = 0; r < J_ROWS; r++) {
+    for (let c = 0; c < J_COLS; c++) {
       const slot = document.createElement("div");
       slot.className = "slot";
       slot.style.left = (PAD + c * pw) + "px";
@@ -179,39 +232,32 @@ function buildPuzzle(PAD) {
       slot.style.height = ph + "px";
       board.appendChild(slot);
 
-      // 拼圖塊
       const el = document.createElement("div");
       el.className = "piece";
       el.style.width = pw + "px";
       el.style.height = ph + "px";
-      el.style.backgroundSize = boardW + "px " + boardH + "px";
+      el.style.backgroundSize = fitW + "px " + fitH + "px";
       el.style.backgroundPosition = (-c * pw) + "px " + (-r * ph) + "px";
       board.appendChild(el);
 
-      const piece = {
-        el, row: r, col: c,
-        targetX: PAD + c * pw,
-        targetY: PAD + r * ph,
-        locked: false
-      };
-      pieces.push(piece);
-      attachDrag(piece);
+      const piece = { el, targetX: PAD + c * pw, targetY: PAD + r * ph, locked: false };
+      jPieces.push(piece);
+      attachDrag(piece, pw, ph);
     }
   }
-  scatter(PAD);
-  updateStatus();
+  scatter(pw, ph);
+  statusEl.textContent = "已完成 0 / " + jPieces.length;
 }
 
-function scatter(PAD) {
-  pieces.forEach(p => {
-    const x = Math.random() * (boardW + PAD * 2 - pw);
-    const y = Math.random() * (boardH + PAD * 2 - ph);
+function scatter(pw, ph) {
+  jPieces.forEach(p => {
+    const x = Math.random() * (fitW + PAD * 2 - pw);
+    const y = Math.random() * (fitH + PAD * 2 - ph);
     setPos(p, x, y);
     p.locked = false;
     p.el.classList.remove("locked");
   });
 }
-
 function setPos(p, x, y) {
   p.x = x; p.y = y;
   p.el.style.left = x + "px";
@@ -220,17 +266,14 @@ function setPos(p, x, y) {
 
 function attachDrag(p) {
   let dx, dy, active = false;
-
   const down = (e) => {
     if (p.locked) return;
     startTimer();
     active = true;
     const pt = getPoint(e);
-    dx = pt.x - p.x;
-    dy = pt.y - p.y;
+    dx = pt.x - p.x; dy = pt.y - p.y;
     p.el.classList.add("dragging");
-    // 移到最上層
-    board.appendChild(p.el);
+    board.appendChild(p.el);       // 移到最上層
     e.preventDefault();
   };
   const move = (e) => {
@@ -242,50 +285,149 @@ function attachDrag(p) {
     if (!active) return;
     active = false;
     p.el.classList.remove("dragging");
-    // 檢查吸附
     if (Math.abs(p.x - p.targetX) < SNAP && Math.abs(p.y - p.targetY) < SNAP) {
       setPos(p, p.targetX, p.targetY);
       p.locked = true;
       p.el.classList.add("locked");
-      updateStatus();
-      checkWin();
+      const done = jPieces.filter(x => x.locked).length;
+      statusEl.textContent = "已完成 " + done + " / " + jPieces.length;
+      if (jPieces.every(x => x.locked)) showWin("完成！🎉");
     }
   };
-
   p.el.addEventListener("mousedown", down);
-  p.el.addEventListener("touchstart", down, {passive:false});
+  p.el.addEventListener("touchstart", down, { passive: false });
   window.addEventListener("mousemove", move);
-  window.addEventListener("touchmove", move, {passive:false});
+  window.addEventListener("touchmove", move, { passive: false });
   window.addEventListener("mouseup", up);
   window.addEventListener("touchend", up);
 }
-
 function getPoint(e) {
   const rect = board.getBoundingClientRect();
   const src = e.touches ? e.touches[0] : e;
   return { x: src.clientX - rect.left, y: src.clientY - rect.top };
 }
 
-function updateStatus() {
-  const done = pieces.filter(p => p.locked).length;
-  statusEl.textContent = `已完成 ${done} / ${pieces.length}`;
-}
+/* =======================================================
+   華容道模式：4 × 4，拿掉左上角(空格)，點擊滑動
+   ======================================================= */
+const S_N = 4;
+let grid = [];           // grid[r][c] = tile 物件或 null
+let empty = { r: 0, c: 0 };
+let tw, th, moves = 0;
 
-function checkWin() {
-  if (pieces.every(p => p.locked)) {
-    const elapsed = stopTimer();
-    winEl.innerHTML = "完成！🎉<br><span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
-    winEl.style.display = "flex";
+function buildSlide() {
+  tw = fitW / S_N; th = fitH / S_N;
+  board.style.width = fitW + "px";
+  board.style.height = fitH + "px";
+  grid = [];
+  moves = 0;
+
+  for (let r = 0; r < S_N; r++) {
+    grid[r] = [];
+    for (let c = 0; c < S_N; c++) {
+      if (r === 0 && c === 0) { grid[r][c] = null; continue; }  // 左上角空格
+      const el = document.createElement("div");
+      el.className = "tile";
+      el.style.width = tw + "px";
+      el.style.height = th + "px";
+      el.style.backgroundSize = fitW + "px " + fitH + "px";
+      el.style.backgroundPosition = (-c * tw) + "px " + (-r * th) + "px";
+      const num = document.createElement("span");
+      num.className = "num";
+      num.textContent = r * S_N + c;   // 1 ~ 15
+      el.appendChild(num);
+      board.appendChild(el);
+      const tile = { el, correct: { r, c } };
+      el.addEventListener("click", () => tryMove(tile.r, tile.c));
+      grid[r][c] = tile;
+    }
   }
+  empty = { r: 0, c: 0 };
+  renderAll(true);
+  shuffleSlide();
+  statusEl.textContent = "步數 0";
 }
 
-document.getElementById("shuffle").addEventListener("click", () => {
-  const PAD = +board.dataset.pad;
-  winEl.style.display = "none";
-  scatter(PAD);
-  updateStatus();
-  resetTimer();
-});
+function renderAll(instant) {
+  if (instant) board.classList.add("no-anim");
+  for (let r = 0; r < S_N; r++) {
+    for (let c = 0; c < S_N; c++) {
+      const t = grid[r][c];
+      if (!t) continue;
+      t.r = r; t.c = c;
+      t.el.style.left = (c * tw) + "px";
+      t.el.style.top = (r * th) + "px";
+    }
+  }
+  if (instant) { void board.offsetWidth; board.classList.remove("no-anim"); }
+}
+
+// 點擊 (r,c) 的方塊：若和空格同行或同列，把中間整排推向空格
+function tryMove(r, c) {
+  if (r !== empty.r && c !== empty.c) return;   // 不同行也不同列，無法移動
+  if (r === empty.r && c === empty.c) return;
+  startTimer();
+
+  if (r === empty.r) {
+    const step = c < empty.c ? -1 : 1;          // 從空格指向被點方塊
+    let cc = empty.c;
+    while (cc !== c) {
+      grid[r][cc] = grid[r][cc + step];
+      cc += step;
+    }
+    grid[r][c] = null;
+    empty = { r, c };
+  } else {
+    const step = r < empty.r ? -1 : 1;
+    let rr = empty.r;
+    while (rr !== r) {
+      grid[rr][c] = grid[rr + step][c];
+      rr += step;
+    }
+    grid[r][c] = null;
+    empty = { r, c };
+  }
+  moves++;
+  statusEl.textContent = "步數 " + moves;
+  renderAll(false);
+  if (isSolved()) showWin("完成！🎉");
+}
+
+function isSolved() {
+  if (!(empty.r === 0 && empty.c === 0)) return false;
+  for (let r = 0; r < S_N; r++) {
+    for (let c = 0; c < S_N; c++) {
+      if (r === 0 && c === 0) continue;
+      const t = grid[r][c];
+      if (!t || t.correct.r !== r || t.correct.c !== c) return false;
+    }
+  }
+  return true;
+}
+
+// 從已解狀態做大量隨機合法移動 → 保證有解
+function shuffleSlide() {
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  let last = null;
+  for (let i = 0; i < 800; i++) {
+    const opts = dirs
+      .map(([dr, dc]) => ({ r: empty.r + dr, c: empty.c + dc }))
+      .filter(o => o.r >= 0 && o.r < S_N && o.c >= 0 && o.c < S_N)
+      .filter(o => !last || o.r !== last.r || o.c !== last.c);  // 避免立刻走回頭
+    const o = opts[Math.floor(Math.random() * opts.length)];
+    grid[empty.r][empty.c] = grid[o.r][o.c];
+    grid[o.r][o.c] = null;
+    last = { r: empty.r, c: empty.c };
+    empty = { r: o.r, c: o.c };
+  }
+  if (isSolved()) shuffleSlide();   // 極少數剛好回到原狀就重洗
+  renderAll(true);
+}
+
+/* ---------- 控制列 ---------- */
+document.getElementById("mode-jigsaw").addEventListener("click", () => startMode("jigsaw"));
+document.getElementById("mode-slide").addEventListener("click", () => startMode("slide"));
+document.getElementById("action").addEventListener("click", () => startMode(mode));
 </script>
 </body>
 </html>
