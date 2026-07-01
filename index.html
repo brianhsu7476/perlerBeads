@@ -107,6 +107,95 @@
     pointer-events: none;
   }
 
+  /* ---------- 格豆模式 (Ricochet Robots) ---------- */
+  #rr-controls { display: none; flex-direction: column; align-items: center; margin-bottom: 14px; }
+  .rr-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .rr-pad button {
+    width: min(26vw, 96px);
+    height: min(26vw, 96px);
+    padding: 0;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.1;
+    font-size: min(7vw, 30px);
+  }
+  .rr-pad button small { font-size: min(3vw, 13px); opacity: .6; font-weight: 400; margin-top: 2px; }
+  .rr-pad [data-dir] { background: #4f6df5; }
+  .rr-pad [data-dir="undo"] { background: #5a5f73; }
+  .rr-pad [data-sel] { background: #3a3d4d; }
+  .rr-pad [data-sel].selactive { background: #e8564a; }
+  .rr-cell {
+    position: absolute;
+    box-sizing: border-box;
+    border: 0 solid #6f7ce0;
+  }
+  @keyframes rr-spin { to { transform: rotate(360deg); } }
+  .rr-center {
+    position: absolute;
+    background: url("flower.png") center/contain no-repeat;
+    z-index: 2;
+    pointer-events: none;
+    animation: rr-spin 1s linear infinite;
+  }
+  .rr-target {
+    position: absolute;
+    z-index: 3;
+    pointer-events: none;
+    box-sizing: border-box;
+  }
+  .rr-target .rr-flower {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  /* 兩層花朵：::before 為略大的白色剪影當外框，::after 為豆子顏色的花朵疊在上面，
+     露出一圈白邊，即使豆子顏色很深（如黑豆）也能在深色棋盤上看清目標 */
+  .rr-target .rr-flower::before,
+  .rr-target .rr-flower::after {
+    content: "";
+    position: absolute;
+    -webkit-mask: url("flower.png") center/contain no-repeat;
+    mask: url("flower.png") center/contain no-repeat;
+    animation: rr-spin 1s linear infinite;
+  }
+  .rr-target .rr-flower::before {
+    inset: -14%;
+    background: #fff;
+  }
+  .rr-target .rr-flower::after {
+    inset: 0;
+    background: var(--bean, #fff);
+  }
+  .rr-robot {
+    position: absolute;
+    z-index: 4;
+    background: url("arctan.png") center/contain no-repeat;
+    border-radius: 50%;
+    box-shadow: 0 2px 6px rgba(0,0,0,.5);
+    cursor: pointer;
+    transition: left .16s ease, top .16s ease;
+    box-sizing: border-box;
+  }
+  .rr-robot.selected { box-shadow: 0 0 0 3px #fff, 0 0 14px 3px currentColor; z-index: 5; }
+  .rr-robot .rnum {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    min-width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 800;
+    color: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0,0,0,.6);
+  }
+  #board.no-anim .rr-robot { transition: none !important; }
+
   #win {
     position: absolute;
     inset: 0;
@@ -132,10 +221,26 @@
   <div class="bar">
     <button class="modebtn active" id="mode-jigsaw">拼圖模式</button>
     <button class="modebtn" id="mode-slide">華容道模式</button>
+    <button class="modebtn" id="mode-robots">格豆模式</button>
     <button id="action">重新打亂</button>
     <span id="status"></span>
-    <span id="timer">⏱ 00:00</span>
+    <span id="timer">⏱ 00:00.00</span>
   </div>
+
+  <div id="rr-controls">
+    <div class="rr-pad">
+      <button data-sel="0">#0<small>U</small></button>
+      <button data-dir="up">↑<small>W</small></button>
+      <button data-sel="1">#1<small>I</small></button>
+      <button data-dir="left">←<small>A</small></button>
+      <button data-dir="undo">↺<small>R</small></button>
+      <button data-dir="right">→<small>D</small></button>
+      <button data-sel="2">#2<small>O</small></button>
+      <button data-dir="down">↓<small>S</small></button>
+      <button data-sel="3">#3<small>P</small></button>
+    </div>
+  </div>
+
   <div id="board">
     <div id="win">完成！🎉</div>
   </div>
@@ -148,7 +253,7 @@ const statusEl = document.getElementById("status");
 const winEl = document.getElementById("win");
 const timerEl = document.getElementById("timer");
 
-let mode = "jigsaw";     // "jigsaw" | "slide"
+let mode = "jigsaw";     // "jigsaw" | "slide" | "robots"
 let fitW, fitH;          // 圖片顯示尺寸
 
 // ---------- 計時 ----------
@@ -178,12 +283,13 @@ function stopTimer() {
   return startTime === null ? 0 : performance.now() - startTime;
 }
 
-function showWin() {
+function showWin(extra) {
   const elapsed = stopTimer();
   winEl.innerHTML =
     "<div style='display:flex;align-items:center;justify-content:center;gap:12px'>" +
       "完成！<img src='" + IMG_SRC + "' alt='' style='height:48px;width:auto;border-radius:6px'>" +
     "</div>" +
+    (extra ? "<span style='font-size:22px'>" + extra + "</span>" : "") +
     "<span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
   winEl.style.display = "flex";
 }
@@ -200,7 +306,9 @@ img.onload = () => {
 };
 
 function clearBoard() {
-  board.querySelectorAll(".piece, .slot, .tile").forEach(e => e.remove());
+  board.querySelectorAll(".piece, .slot, .tile, .rr-cell, .rr-center, .rr-target, .rr-robot")
+    .forEach(e => e.remove());
+  board.classList.remove("no-anim");
   winEl.style.display = "none";
   resetTimer();
 }
@@ -209,9 +317,13 @@ function startMode(m) {
   mode = m;
   document.getElementById("mode-jigsaw").classList.toggle("active", m === "jigsaw");
   document.getElementById("mode-slide").classList.toggle("active", m === "slide");
+  document.getElementById("mode-robots").classList.toggle("active", m === "robots");
+  document.getElementById("rr-controls").style.display = m === "robots" ? "flex" : "none";
+  document.getElementById("action").textContent = m === "robots" ? "新遊戲" : "重新打亂";
   clearBoard();
   if (m === "jigsaw") buildJigsaw();
-  else buildSlide();
+  else if (m === "slide") buildSlide();
+  else buildRobots();
 }
 
 /* =======================================================
@@ -428,10 +540,262 @@ function shuffleSlide() {
   renderAll(true);
 }
 
+/* =======================================================
+   機器人模式：仿 Ricochet Robots，16×16 棋盤
+   機器人=arctan.png(含編號)，中央 2×2=flower.png(障礙)
+   棋盤產生邏輯移植自 brianhsu7476/ricochet-robots
+   ======================================================= */
+// 四象限牆壁拼塊（'l'=牆）
+const RR_R = [
+  ["loooloooo","loooooooo","loooooloo","loooooooo","loolooooo","loooooolo","llooooooo","loooooolo"],
+  ["loooolooo","loolooooo","loooooooo","llooooooo","loooooloo","loooooooo","loooooloo","loooloolo"],
+  ["loooloooo","loooooloo","llooooooo","loooooooo","loooooloo","loooooooo","loolooooo","loooooolo"],
+  ["loloooooo","loooloooo","loloooooo","loooooolo","loooooooo","loooooooo","loolooooo","loooooolo"]
+];
+const RR_C = [
+  ["loooolooo","loooooloo","loooloooo","loooooooo","loooooooo","loolooooo","loooooooo","looooollo"],
+  ["loooolooo","loooloooo","loloooooo","loooooool","loooooooo","loooooloo","loooloooo","loooooolo"],
+  ["loooloooo","loolooooo","loooooloo","loooooooo","loooooooo","loloooooo","loooloooo","loooooolo"],
+  ["loooooloo","loloooooo","loooooooo","loooooolo","llooooooo","loooooooo","loooloooo","loooooolo"]
+];
+const RR_Gx = ["cefg", "bdegh", "bceg", "bcdg"];
+const RR_Gy = ["fchb", "cbgfd", "fbgc", "ebgd"];
+const RR_COLORS = ["#a4252a", "#e0b13a", "#7cae3b", "#2b2b2b"];  // #0 紅豆 #1 黃豆 #2 綠豆 #3 黑豆
+const RR_NAMES = ["紅", "黃", "綠", "黑"];   // 對應各豆顏色名稱
+
+class RRPoint {
+  constructor(x, y) { this.x = x; this.y = y; }   // x=列(row) y=行(col)
+  add(r) { return new RRPoint(this.x + r.x, this.y + r.y); }
+  eq(r) { return this.x === r.x && this.y === r.y; }
+}
+const rr = {};   // 遊戲狀態
+let rrCell = 40, rrWrap = null;
+
+function rrAscii(ch) { return ch.charCodeAt(0); }
+function rrInCenter(row, col) { return (row === 7 || row === 8) && (col === 7 || col === 8); }
+
+function rrInitMap() {
+  rr.r = []; rr.c = []; rr.gx = []; rr.gy = []; rr.per = [];
+  for (let i = 0; i < 4; ++i) {
+    let a, ok = 1;
+    while (ok) { ok = 0; a = Math.floor(Math.random() * 4); for (let j = 0; j < i; ++j) if (a === rr.per[j]) ok = 1; }
+    rr.per.push(a);
+  }
+  for (let i = 0; i < 16; ++i) { rr.r.push(Array(17).fill('o')); rr.c.push(Array(17).fill('o')); }
+  for (let i = 0; i < 8; ++i) for (let j = 0; j < 9; ++j) {
+    if (rr.r[i][j] === 'o') rr.r[i][j] = RR_R[rr.per[0]][i][j];
+    if (rr.c[i][j] === 'o') rr.c[i][j] = RR_C[rr.per[0]][i][j];
+    if (rr.c[i][16 - j] === 'o') rr.c[i][16 - j] = RR_R[rr.per[1]][i][j];
+    if (rr.r[15 - i][j] === 'o') rr.r[15 - i][j] = RR_C[rr.per[1]][i][j];
+    if (rr.r[15 - i][16 - j] === 'o') rr.r[15 - i][16 - j] = RR_R[rr.per[2]][i][j];
+    if (rr.c[15 - i][16 - j] === 'o') rr.c[15 - i][16 - j] = RR_C[rr.per[2]][i][j];
+    if (rr.c[15 - i][j] === 'o') rr.c[15 - i][j] = RR_R[rr.per[3]][i][j];
+    if (rr.r[i][16 - j] === 'o') rr.r[i][16 - j] = RR_C[rr.per[3]][i][j];
+  }
+  for (let i = 0; i < RR_Gx[rr.per[0]].length; ++i) { rr.gx.push(rrAscii(RR_Gx[rr.per[0]][i]) - 97); rr.gy.push(rrAscii(RR_Gy[rr.per[0]][i]) - 97); }
+  for (let i = 0; i < RR_Gx[rr.per[1]].length; ++i) { rr.gx.push(-rrAscii(RR_Gy[rr.per[1]][i]) + 112); rr.gy.push(rrAscii(RR_Gx[rr.per[1]][i]) - 97); }
+  for (let i = 0; i < RR_Gx[rr.per[2]].length; ++i) { rr.gx.push(-rrAscii(RR_Gx[rr.per[2]][i]) + 112); rr.gy.push(-rrAscii(RR_Gy[rr.per[2]][i]) + 112); }
+  for (let i = 0; i < RR_Gx[rr.per[3]].length; ++i) { rr.gx.push(rrAscii(RR_Gy[rr.per[3]][i]) - 97); rr.gy.push(-rrAscii(RR_Gx[rr.per[3]][i]) + 112); }
+  // 中央 2×2 (列7,8 × 行7,8) 封成障礙
+  rr.c[7][7] = 'l'; rr.c[8][7] = 'l';   // 上緣
+  rr.c[7][9] = 'l'; rr.c[8][9] = 'l';   // 下緣
+  rr.r[7][7] = 'l'; rr.r[8][7] = 'l';   // 左緣
+  rr.r[7][9] = 'l'; rr.r[8][9] = 'l';   // 右緣
+}
+
+function rrInit() {
+  rr.step = 0;
+  // 新遊戲沿用上一場結束時的位置；第一次進入才從四個角落開始
+  rr.robot = (rr.robot && rr.robot.length === 4)
+    ? rr.robot.map(p => new RRPoint(p.x, p.y))
+    : [new RRPoint(0, 0), new RRPoint(0, 15), new RRPoint(15, 15), new RRPoint(15, 0)];
+  rr.gr = rr.id = Math.floor(Math.random() * 4);
+  do { rr.g = Math.floor(Math.random() * rr.gx.length); }
+  while (rrInCenter(rr.gx[rr.g], rr.gy[rr.g]) ||
+         (rr.gx[rr.g] === rr.robot[rr.gr].x && rr.gy[rr.g] === rr.robot[rr.gr].y));
+  rr.steps = [[rr.robot[0]], [rr.robot[1]], [rr.robot[2]], [rr.robot[3]]];
+}
+
+// 機器人 id 往方向 d 滑動(0下 1右 2上 3左)，直到撞牆或撞其他機器人
+function rrMove(id, d) {
+  const p = d === 0 ? new RRPoint(1, 0) : d === 1 ? new RRPoint(0, 1) : d === 2 ? new RRPoint(-1, 0) : new RRPoint(0, -1);
+  for (; ; rr.robot[id] = rr.robot[id].add(p)) {
+    for (let i = 0; i < 4; ++i) if (rr.robot[id].add(p).eq(rr.robot[i])) return;
+    if (d === 0 && rr.c[rr.robot[id].y][rr.robot[id].x + 1] === 'l') return;
+    if (d === 1 && rr.r[rr.robot[id].x][rr.robot[id].y + 1] === 'l') return;
+    if (d === 2 && rr.c[rr.robot[id].y][rr.robot[id].x] === 'l') return;
+    if (d === 3 && rr.r[rr.robot[id].x][rr.robot[id].y] === 'l') return;
+  }
+}
+
+function buildRobots() {
+  rrCell = Math.floor(Math.min(window.innerWidth - 60, 640) / 16);
+  board.style.width = (rrCell * 16) + "px";
+  board.style.height = (rrCell * 16) + "px";
+  rrInitMap();
+  rrInit();
+  rrBuildDOM();
+  rrRender(true);
+  rrLaunchTarget();
+  startTimer();   // 一開局就計時，把思考時間也算進花費時間
+}
+
+// 回合開始：目標圖案從中央 flower 射出，飛到目標格
+function rrLaunchTarget() {
+  const off = Math.round(rrCell * 0.25);
+  const el = rr.targetEl;
+  const cx = 8 * rrCell - off;                    // 棋盤中央（flower 中心）
+  const tx = rr.gy[rr.g] * rrCell + off;          // 目標位置
+  const ty = rr.gx[rr.g] * rrCell + off;
+  el.style.transition = "none";
+  el.style.left = cx + "px";
+  el.style.top = cx + "px";
+  el.style.transform = "scale(0.15)";
+  el.style.opacity = "0";
+  void el.offsetWidth;                            // 強制重排，讓起點生效
+  el.style.transition =
+    "left 1.4s cubic-bezier(.18,.7,.3,1.25), top 1.4s cubic-bezier(.18,.7,.3,1.25), " +
+    "transform 1.4s cubic-bezier(.18,.7,.3,1.25), opacity .6s ease-out";
+  el.style.left = tx + "px";
+  el.style.top = ty + "px";
+  el.style.transform = "scale(1)";
+  el.style.opacity = "1";
+}
+
+function rrBuildDOM() {
+  // 格子 + 牆
+  for (let i = 0; i < 16; ++i) for (let j = 0; j < 16; ++j) {
+    const cell = document.createElement("div");
+    cell.className = "rr-cell";
+    cell.style.left = (j * rrCell) + "px";
+    cell.style.top = (i * rrCell) + "px";
+    cell.style.width = rrCell + "px";
+    cell.style.height = rrCell + "px";
+    const w = [];   // top right bottom left
+    w.push(rr.c[j][i] === 'l' ? 3 : 0);
+    w.push(rr.r[i][j + 1] === 'l' ? 3 : 0);
+    w.push(rr.c[j][i + 1] === 'l' ? 3 : 0);
+    w.push(rr.r[i][j] === 'l' ? 3 : 0);
+    cell.style.borderWidth = w.map(x => x + "px").join(" ");
+    board.appendChild(cell);
+  }
+  // 中央 flower (2×2)
+  const center = document.createElement("div");
+  center.className = "rr-center";
+  center.style.left = (7 * rrCell) + "px";
+  center.style.top = (7 * rrCell) + "px";
+  center.style.width = (2 * rrCell) + "px";
+  center.style.height = (2 * rrCell) + "px";
+  board.appendChild(center);
+  // 目標標記
+  rr.targetEl = document.createElement("div");
+  rr.targetEl.className = "rr-target";
+  rr.targetEl.style.width = Math.round(rrCell * 0.5) + "px";
+  rr.targetEl.style.height = Math.round(rrCell * 0.5) + "px";
+  rr.targetFlower = document.createElement("div");   // 內層：旋轉的花朵剪影
+  rr.targetFlower.className = "rr-flower";
+  rr.targetEl.appendChild(rr.targetFlower);
+  board.appendChild(rr.targetEl);
+  // 機器人
+  rr.robotEls = [];
+  for (let k = 0; k < 4; ++k) {
+    const el = document.createElement("div");
+    el.className = "rr-robot";
+    const m = Math.round(rrCell * 0.12);
+    el.style.width = (rrCell - m * 2) + "px";
+    el.style.height = (rrCell - m * 2) + "px";
+    el.style.color = RR_COLORS[k];
+    el.style.outline = "2px solid " + RR_COLORS[k];
+    const num = document.createElement("span");
+    num.className = "rnum";
+    num.textContent = k;
+    num.style.background = RR_COLORS[k];
+    el.appendChild(num);
+    el.addEventListener("click", () => rrSelect(k));
+    board.appendChild(el);
+    rr.robotEls.push(el);
+  }
+}
+
+function rrRender(instant) {
+  if (instant) board.classList.add("no-anim");
+  const m = Math.round(rrCell * 0.12);
+  for (let k = 0; k < 4; ++k) {
+    const el = rr.robotEls[k], p = rr.robot[k];
+    el.style.left = (p.y * rrCell + m) + "px";
+    el.style.top = (p.x * rrCell + m) + "px";
+    el.classList.toggle("selected", k === rr.id);
+  }
+  // 目標（置中的小方框，避免跟牆壁混淆）
+  const off = Math.round(rrCell * 0.25);
+  rr.targetEl.style.left = (rr.gy[rr.g] * rrCell + off) + "px";
+  rr.targetEl.style.top = (rr.gx[rr.g] * rrCell + off) + "px";
+  rr.targetFlower.style.setProperty("--bean", RR_COLORS[rr.gr]);   // 對應格豆顏色的花朵剪影
+  if (instant) { void board.offsetWidth; board.classList.remove("no-anim"); }
+  // 高亮目前選中格豆的選擇按鈕（用該格豆的顏色）
+  document.querySelectorAll("#rr-controls [data-sel]").forEach(b => {
+    const active = +b.dataset.sel === rr.id;
+    b.classList.toggle("selactive", active);
+    b.style.background = active ? RR_COLORS[+b.dataset.sel] : "";
+  });
+  statusEl.textContent = "步數 " + rr.step + "　目標：" + RR_NAMES[rr.gr] + "豆到旋轉" + RR_NAMES[rr.gr] + "豆花";
+}
+
+function rrSelect(k) { rr.id = k; rrRender(false); }
+
+function rrMoveDir(d) {
+  const before = new RRPoint(rr.robot[rr.id].x, rr.robot[rr.id].y);
+  rrMove(rr.id, d);
+  if (rr.robot[rr.id].eq(before)) return;   // 沒移動就不計步
+  for (let i = 0; i < 4; ++i) rr.steps[i].push(new RRPoint(rr.robot[i].x, rr.robot[i].y));
+  rr.step++;
+  rrRender(false);
+  if (rr.robot[rr.gr].x === rr.gx[rr.g] && rr.robot[rr.gr].y === rr.gy[rr.g])
+    showWin(RR_NAMES[rr.gr] + "豆　共 " + rr.step + " 步");
+}
+
+function rrUndo() {
+  if (!rr.step) return;
+  for (let i = 0; i < 4; ++i) { rr.robot[i] = rr.steps[i][rr.step - 1]; rr.steps[i].pop(); }
+  rr.step--;
+  winEl.style.display = "none";
+  rrRender(false);
+}
+
+function rrNewGame() { startMode("robots"); }
+
 /* ---------- 控制列 ---------- */
 document.getElementById("mode-jigsaw").addEventListener("click", () => startMode("jigsaw"));
 document.getElementById("mode-slide").addEventListener("click", () => startMode("slide"));
-document.getElementById("action").addEventListener("click", () => startMode(mode));
+document.getElementById("mode-robots").addEventListener("click", () => startMode("robots"));
+document.getElementById("action").addEventListener("click", () => {
+  if (mode === "robots") rrNewGame();
+  else startMode(mode);
+});
+
+// 格豆模式控制盤
+const DIR_MAP = { up: 2, down: 0, left: 3, right: 1 };
+document.querySelectorAll("#rr-controls [data-dir]").forEach(b =>
+  b.addEventListener("click", () => {
+    if (b.dataset.dir === "undo") rrUndo();
+    else rrMoveDir(DIR_MAP[b.dataset.dir]);
+  }));
+document.querySelectorAll("#rr-controls [data-sel]").forEach(b =>
+  b.addEventListener("click", () => rrSelect(+b.dataset.sel)));
+
+// 機器人模式鍵盤操作
+document.addEventListener("keydown", (e) => {
+  if (mode !== "robots") return;
+  const k = e.key.toLowerCase();
+  if (["arrowup", "w"].includes(k)) { rrMoveDir(2); e.preventDefault(); }
+  else if (["arrowdown", "s"].includes(k)) { rrMoveDir(0); e.preventDefault(); }
+  else if (["arrowleft", "a"].includes(k)) { rrMoveDir(3); e.preventDefault(); }
+  else if (["arrowright", "d"].includes(k)) { rrMoveDir(1); e.preventDefault(); }
+  else if (k === "r") rrUndo();
+  else if (k === "n") rrNewGame();
+  else if ("0123".includes(k)) rrSelect(+k);
+  else if (["u", "i", "o", "p"].includes(k)) rrSelect("uiop".indexOf(k));
+});
 </script>
 </body>
 </html>
