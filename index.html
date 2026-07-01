@@ -154,23 +154,23 @@ let fitW, fitH;          // 圖片顯示尺寸
 // ---------- 計時 ----------
 let startTime = null, timerInterval = null;
 function fmt(ms) {
-  const s = Math.floor(ms / 1000);
-  const mm = String(Math.floor(s / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
+  const totalSec = ms / 1000;
+  const mm = String(Math.floor(totalSec / 60)).padStart(2, "0");
+  const ss = (totalSec % 60).toFixed(2).padStart(5, "0");   // SS.dd
   return mm + ":" + ss;
 }
 function resetTimer() {
   clearInterval(timerInterval);
   timerInterval = null;
   startTime = null;
-  timerEl.textContent = "⏱ 00:00";
+  timerEl.textContent = "⏱ 00:00.00";
 }
 function startTimer() {
   if (startTime !== null) return;      // 只在第一次操作時啟動
   startTime = performance.now();
   timerInterval = setInterval(() => {
     timerEl.textContent = "⏱ " + fmt(performance.now() - startTime);
-  }, 250);
+  }, 50);
 }
 function stopTimer() {
   clearInterval(timerInterval);
@@ -178,9 +178,13 @@ function stopTimer() {
   return startTime === null ? 0 : performance.now() - startTime;
 }
 
-function showWin(msg) {
+function showWin() {
   const elapsed = stopTimer();
-  winEl.innerHTML = msg + "<br><span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
+  winEl.innerHTML =
+    "<div style='display:flex;align-items:center;justify-content:center;gap:12px'>" +
+      "完成！<img src='" + IMG_SRC + "' alt='' style='height:48px;width:auto;border-radius:6px'>" +
+    "</div>" +
+    "<span style='font-size:22px'>花費時間 " + fmt(elapsed) + "</span>";
   winEl.style.display = "flex";
 }
 
@@ -291,7 +295,7 @@ function attachDrag(p) {
       p.el.classList.add("locked");
       const done = jPieces.filter(x => x.locked).length;
       statusEl.textContent = "已完成 " + done + " / " + jPieces.length;
-      if (jPieces.every(x => x.locked)) showWin("完成！🎉");
+      if (jPieces.every(x => x.locked)) showWin();
     }
   };
   p.el.addEventListener("mousedown", down);
@@ -390,7 +394,7 @@ function tryMove(r, c) {
   moves++;
   statusEl.textContent = "步數 " + moves;
   renderAll(false);
-  if (isSolved()) showWin("完成！🎉");
+  if (isSolved()) showWin();
 }
 
 function isSolved() {
