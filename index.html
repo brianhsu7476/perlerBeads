@@ -49,6 +49,14 @@
     touch-action: none;
   }
 
+  /* ---------- 種豆模式 (agar.io) ---------- */
+  #agar-canvas {
+    display: block;
+    border-radius: 10px;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
   /* ---------- 拼圖模式 ---------- */
   .slot {
     position: absolute;
@@ -222,6 +230,7 @@
     <button class="modebtn active" id="mode-jigsaw">拼圖模式</button>
     <button class="modebtn" id="mode-slide">華容道模式</button>
     <button class="modebtn" id="mode-robots">格豆模式</button>
+    <button class="modebtn" id="mode-agar">種豆模式</button>
     <button id="action">重新打亂</button>
     <span id="status"></span>
     <span id="timer">⏱ 00:00.00</span>
@@ -253,7 +262,7 @@ const statusEl = document.getElementById("status");
 const winEl = document.getElementById("win");
 const timerEl = document.getElementById("timer");
 
-let mode = "jigsaw";     // "jigsaw" | "slide" | "robots"
+let mode = "jigsaw";     // "jigsaw" | "slide" | "robots" | "agar"
 let fitW, fitH;          // 圖片顯示尺寸
 
 // ---------- 計時 ----------
@@ -295,6 +304,8 @@ function showWin(extra) {
 }
 
 // ---------- 載入圖片 ----------
+const flowerImg = new Image();   // 種豆模式的病毒
+flowerImg.src = "flower.png";
 const img = new Image();
 img.src = IMG_SRC;
 img.onload = () => {
@@ -306,8 +317,11 @@ img.onload = () => {
 };
 
 function clearBoard() {
-  board.querySelectorAll(".piece, .slot, .tile, .rr-cell, .rr-center, .rr-target, .rr-robot")
+  stopAgar();
+  board.querySelectorAll(".piece, .slot, .tile, .rr-cell, .rr-center, .rr-target, .rr-robot, #agar-canvas")
     .forEach(e => e.remove());
+  board.style.width = "";
+  board.style.height = "";
   board.classList.remove("no-anim");
   winEl.style.display = "none";
   resetTimer();
@@ -318,12 +332,14 @@ function startMode(m) {
   document.getElementById("mode-jigsaw").classList.toggle("active", m === "jigsaw");
   document.getElementById("mode-slide").classList.toggle("active", m === "slide");
   document.getElementById("mode-robots").classList.toggle("active", m === "robots");
+  document.getElementById("mode-agar").classList.toggle("active", m === "agar");
   document.getElementById("rr-controls").style.display = m === "robots" ? "flex" : "none";
-  document.getElementById("action").textContent = m === "robots" ? "新遊戲" : "重新打亂";
+  document.getElementById("action").textContent = (m === "robots" || m === "agar") ? "新遊戲" : "重新打亂";
   clearBoard();
   if (m === "jigsaw") buildJigsaw();
   else if (m === "slide") buildSlide();
-  else buildRobots();
+  else if (m === "robots") buildRobots();
+  else buildAgar();
 }
 
 /* =======================================================
@@ -764,10 +780,373 @@ function rrUndo() {
 
 function rrNewGame() { startMode("robots"); }
 
+/* =======================================================
+   種豆模式：agar.io
+   一般細胞 = arctan.png，病毒 = flower.png
+   ======================================================= */
+const AGAR_COLORS = ["#a4252a", "#e0b13a", "#7cae3b", "#4f8ef5", "#c86ad0", "#e8843f"];
+const AGAR_START_MASS = 14;      // ★開發用：玩家初始質量（改成 500 可方便測試大體積）
+const AGAR_MAX_PIECES = 16;       // 玩家最多分裂成幾塊
+const AGAR_MERGE_MS = 10000;     // 分裂後多久才能重新合併
+const AGAR_DECAY = 0; // 0.00004;      // 大細胞每幀(60fps)質量流失比例，約 0.24%/秒
+const AGAR_SPLIT_IMPULSE = 34;   // 分裂彈射初速（越大彈得越遠）
+const AGAR_IMPULSE_DECAY = 0.9;  // 彈射衝量每幀衰減（越接近 1 滑得越遠）
+const AGAR_VIRUS_MASS = 100;     // 病毒質量（吃到會先加這麼多，再自體分裂）
+const agar = {
+  running: false, raf: 0, last: 0,
+  canvas: null, ctx: null, W: 0, H: 0,
+  world: 3000,
+  player: [], cells: [], food: [], viruses: [],
+  pointer: { x: 0, y: 0 }, peak: 0,
+};
+let agarBead = null;             // 預先裁好的圓形豆子(加速繪製)
+
+function agarR(mass) { return Math.sqrt(mass) * 4; }                       // 質量→半徑
+function agarSpeed(r) { return Math.max(0.9, 5.2 * Math.pow(18 / r, 0.32)); } // 半徑→速度(越大越慢)
+function agarColor() { return AGAR_COLORS[Math.floor(Math.random() * AGAR_COLORS.length)]; }
+
+function agarMakeBead() {         // 把 arctan.png 裁成圓形快取，之後直接貼圖免每格 clip
+  const S = 128;
+  const c = document.createElement("canvas");
+  c.width = S; c.height = S;
+  const x = c.getContext("2d");
+  x.beginPath(); x.arc(S / 2, S / 2, S / 2, 0, 6.283); x.closePath(); x.clip();
+  x.drawImage(img, 0, 0, S, S);
+  agarBead = c;
+}
+
+function agarNewFood() {
+  return { x: Math.random() * agar.world, y: Math.random() * agar.world, mass: 1, color: agarColor() };
+}
+function agarNewCell(mass) {
+  return {
+    x: Math.random() * agar.world, y: Math.random() * agar.world,
+    mass, color: agarColor(),
+    tx: Math.random() * agar.world, ty: Math.random() * agar.world, retarget: 0,
+  };
+}
+function agarNewVirus() {
+  return { x: 80 + Math.random() * (agar.world - 160), y: 80 + Math.random() * (agar.world - 160), mass: AGAR_VIRUS_MASS, ang: Math.random() * 6.283 };
+}
+
+function buildAgar() {
+  if (!agarBead && img.complete) agarMakeBead();
+  const size = Math.floor(Math.min(window.innerWidth - 40, window.innerHeight - 150, 900));
+  board.style.width = size + "px";
+  board.style.height = size + "px";
+  const cv = document.createElement("canvas");
+  cv.id = "agar-canvas";
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  cv.width = size * dpr; cv.height = size * dpr;
+  cv.style.width = size + "px"; cv.style.height = size + "px";
+  board.insertBefore(cv, winEl);
+  agar.canvas = cv;
+  agar.ctx = cv.getContext("2d");
+  agar.ctx.scale(dpr, dpr);
+  agar.W = size; agar.H = size;
+
+  agar.food = []; agar.cells = []; agar.viruses = [];
+  for (let i = 0; i < 450; i++) agar.food.push(agarNewFood());
+  for (let i = 0; i < 12; i++) agar.cells.push(agarNewCell(10 + Math.random() * 45));
+  for (let i = 0; i < 7; i++) agar.viruses.push(agarNewVirus());
+  agar.player = [{ x: agar.world / 2, y: agar.world / 2, mass: AGAR_START_MASS, vx: 0, vy: 0, mergeAt: 0, isPlayer: true }];
+  agar.peak = AGAR_START_MASS;
+  agar.pointer.x = size / 2; agar.pointer.y = size / 2;
+
+  cv.addEventListener("pointermove", agarPointer);
+  cv.addEventListener("pointerdown", agarPointer);
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+
+  statusEl.textContent = "質量 " + Math.round(AGAR_START_MASS);
+  startTimer();
+  agar.running = true;
+  agar.last = performance.now();
+  agar.raf = requestAnimationFrame(agarLoop);
+}
+
+function agarPointer(e) {
+  const rect = agar.canvas.getBoundingClientRect();
+  agar.pointer.x = e.clientX - rect.left;
+  agar.pointer.y = e.clientY - rect.top;
+}
+
+function stopAgar() {
+  if (agar.raf) cancelAnimationFrame(agar.raf);
+  agar.raf = 0; agar.running = false;
+  if (agar.canvas) {
+    agar.canvas.removeEventListener("pointermove", agarPointer);
+    agar.canvas.removeEventListener("pointerdown", agarPointer);
+  }
+  agar.canvas = null; agar.ctx = null;
+}
+
+function agarPlayerMass() { let m = 0; for (const p of agar.player) m += p.mass; return m; }
+function agarPlayerCenter() {
+  let mx = 0, my = 0, tm = 0;
+  for (const p of agar.player) { mx += p.x * p.mass; my += p.y * p.mass; tm += p.mass; }
+  return tm ? [mx / tm, my / tm] : [agar.world / 2, agar.world / 2];
+}
+function agarScale() {
+  const pr = agarR(agarPlayerMass());
+  return (agar.W / 2) / (pr * 6 + 160);   // 玩家越大，視野越廣(縮得越小)
+}
+function agarWorldPointer() {              // 指標對應的世界座標
+  const s = agarScale(), [cx, cy] = agarPlayerCenter();
+  return [cx + (agar.pointer.x - agar.W / 2) / s, cy + (agar.pointer.y - agar.H / 2) / s];
+}
+
+function agarMoveToward(c, tx, ty, dt) {
+  const r = agarR(c.mass);
+  const dx = tx - c.x, dy = ty - c.y;
+  const d = Math.hypot(dx, dy) || 1;
+  const f = Math.min(1, d / (r + 4));     // 靠近目標時放慢
+  const sp = agarSpeed(r) * f * dt;
+  c.x = Math.max(r, Math.min(agar.world - r, c.x + dx / d * sp));
+  c.y = Math.max(r, Math.min(agar.world - r, c.y + dy / d * sp));
+}
+
+// 空白鍵：朝指標方向分裂
+function agarSplit() {
+  if (mode !== "agar" || !agar.running) return;
+  const now = performance.now();
+  const [wx, wy] = agarWorldPointer();
+  const add = [];
+  for (const p of agar.player) {
+    if (agar.player.length + add.length >= AGAR_MAX_PIECES) break;
+    if (p.mass < 36) continue;
+    const half = p.mass / 2;
+    p.mass = half; p.mergeAt = now + AGAR_MERGE_MS;
+    const dx = wx - p.x, dy = wy - p.y, d = Math.hypot(dx, dy) || 1;
+    add.push({ x: p.x, y: p.y, mass: half, vx: dx / d * AGAR_SPLIT_IMPULSE, vy: dy / d * AGAR_SPLIT_IMPULSE, mergeAt: now + AGAR_MERGE_MS, isPlayer: true });
+  }
+  for (const np of add) agar.player.push(np);
+}
+
+// 玩家各塊之間：未到合併時間就互相推開，時間到且靠近就合併
+function agarPlayerInteract(now) {
+  const P = agar.player;
+  for (let i = 0; i < P.length; i++) {
+    for (let j = i + 1; j < P.length; j++) {
+      const a = P[i], b = P[j];
+      if (a.merged || b.merged) continue;
+      const ra = agarR(a.mass), rb = agarR(b.mass);
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 0.01;
+      if (now >= a.mergeAt && now >= b.mergeAt) {
+        if (d < Math.max(ra, rb)) {                       // 合併
+          const big = a.mass >= b.mass ? a : b, small = big === a ? b : a;
+          big.mass += small.mass; small.merged = true;
+        }
+      } else if (d < ra + rb) {                           // 推開避免重疊
+        const push = (ra + rb - d) / 2, nx = dx / d, ny = dy / d;
+        a.x -= nx * push; a.y -= ny * push;
+        b.x += nx * push; b.y += ny * push;
+      }
+    }
+  }
+  agar.player = P.filter(p => !p.merged);
+}
+
+function agarBotThink(b, dt) {
+  const br = agarR(b.mass);
+  let threat = null, td = 1e9, prey = null, pd = 1e9;
+  const others = agar.cells.concat(agar.player);
+  for (const o of others) {
+    if (o === b || o.dead) continue;
+    const d = Math.hypot(o.x - b.x, o.y - b.y);
+    if (o.mass > b.mass * 1.15 && d < br * 8 && d < td) { threat = o; td = d; }
+    else if (b.mass > o.mass * 1.15 && d < br * 9 && d < pd) { prey = o; pd = d; }
+  }
+  let food = null, fd = 1e9;
+  for (const f of agar.food) {
+    const d = Math.hypot(f.x - b.x, f.y - b.y);
+    if (d < br * 7 && d < fd) { fd = d; food = f; }
+  }
+  let tx, ty;
+  if (threat) { tx = 2 * b.x - threat.x; ty = 2 * b.y - threat.y; }      // 逃離
+  else if (prey && pd <= fd) { tx = prey.x; ty = prey.y; }
+  else if (food) { tx = food.x; ty = food.y; }
+  else {
+    b.retarget -= dt;
+    if (b.retarget <= 0 || Math.hypot(b.tx - b.x, b.ty - b.y) < br) {
+      b.tx = Math.random() * agar.world; b.ty = Math.random() * agar.world; b.retarget = 120;
+    }
+    tx = b.tx; ty = b.ty;
+  }
+  for (const v of agar.viruses) {                                        // 大細胞怕病毒
+    if (b.mass > v.mass) {
+      const d = Math.hypot(v.x - b.x, v.y - b.y);
+      if (d < br + agarR(v.mass) + 30) { tx = 2 * b.x - v.x; ty = 2 * b.y - v.y; }
+    }
+  }
+  agarMoveToward(b, tx, ty, dt);
+}
+
+function agarEatFood(c) {
+  const r = agarR(c.mass), r2 = r * r;
+  for (let i = agar.food.length - 1; i >= 0; i--) {
+    const f = agar.food[i];
+    if ((f.x - c.x) ** 2 + (f.y - c.y) ** 2 < r2) { c.mass += f.mass; agar.food.splice(i, 1); }
+  }
+}
+
+function agarResolveCells() {
+  const all = agar.cells.concat(agar.player);
+  for (const a of all) {
+    if (a.dead) continue;
+    for (const b of all) {
+      if (a === b || b.dead) continue;
+      if (a.isPlayer && b.isPlayer) continue;    // 自己的分身不互吃
+      if (a.mass > b.mass * 1.15) {
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < agarR(a.mass) - agarR(b.mass) * 0.5) { a.mass += b.mass; b.dead = true; }
+      }
+    }
+  }
+}
+
+function agarResolveViruses() {
+  const now = performance.now();
+  for (const c of agar.cells) {                  // AI 撞病毒：先吃下病毒質量，但無法分裂而四散損失
+    if (c.dead) continue;
+    for (let i = 0; i < agar.viruses.length; i++) {
+      const v = agar.viruses[i];
+      if (c.mass > v.mass * 1.15 && Math.hypot(c.x - v.x, c.y - v.y) < agarR(c.mass) - agarR(v.mass) * 0.3) {
+        c.mass = Math.max(12, (c.mass + v.mass) * 0.5); agar.viruses[i] = agarNewVirus();
+      }
+    }
+  }
+  const add = [];                                // 玩家撞病毒：先加病毒質量，再自體分裂成至多 8 塊
+  for (const p of agar.player) {
+    for (let i = 0; i < agar.viruses.length; i++) {
+      const v = agar.viruses[i];
+      if (p.mass > v.mass * 1.15 && Math.hypot(p.x - v.x, p.y - v.y) < agarR(p.mass) - agarR(v.mass) * 0.3) {
+        p.mass += v.mass;                        // 先吃下病毒
+        const room = AGAR_MAX_PIECES - (agar.player.length + add.length);
+        const n = Math.min(room, Math.floor(p.mass / 24));   // 盡量補滿到 8 塊
+        if (n >= 1) {
+          const piece = p.mass / (n + 1);
+          p.mass = piece; p.mergeAt = now + AGAR_MERGE_MS;
+          for (let k = 0; k < n; k++) {
+            const a = Math.random() * 6.283;
+            add.push({ x: p.x, y: p.y, mass: piece, vx: Math.cos(a) * AGAR_SPLIT_IMPULSE * 0.7, vy: Math.sin(a) * AGAR_SPLIT_IMPULSE * 0.7, mergeAt: now + AGAR_MERGE_MS, isPlayer: true });
+          }
+        }                                        // 已滿 8 塊則不再分裂，只保留吃到的質量
+        agar.viruses[i] = agarNewVirus();
+      }
+    }
+  }
+  for (const np of add) agar.player.push(np);
+}
+
+function agarUpdate(dt, now) {
+  const [wx, wy] = agarWorldPointer();
+  for (const p of agar.player) {
+    agarMoveToward(p, wx, wy, dt);
+    p.x += p.vx * dt; p.y += p.vy * dt;                  // 分裂衝量
+    const decay = Math.pow(AGAR_IMPULSE_DECAY, dt);
+    p.vx *= decay; p.vy *= decay;
+    if (Math.abs(p.vx) < 0.05) p.vx = 0;
+    if (Math.abs(p.vy) < 0.05) p.vy = 0;
+    const r = agarR(p.mass);
+    p.x = Math.max(r, Math.min(agar.world - r, p.x));
+    p.y = Math.max(r, Math.min(agar.world - r, p.y));
+  }
+  for (const b of agar.cells) agarBotThink(b, dt);
+  for (const v of agar.viruses) v.ang += 0.02 * dt;
+
+  for (const p of agar.player) agarEatFood(p);
+  for (const b of agar.cells) agarEatFood(b);
+  agarResolveCells();
+  agarResolveViruses();
+  agarPlayerInteract(now);
+
+  for (const c of agar.cells.concat(agar.player))   // 大細胞緩慢流失質量
+    if (c.mass > 30) c.mass -= c.mass * AGAR_DECAY * dt;
+
+  agar.cells = agar.cells.filter(c => !c.dead);
+  while (agar.cells.length < 12) agar.cells.push(agarNewCell(10 + Math.random() * 30));
+  while (agar.food.length < 450) agar.food.push(agarNewFood());
+  agar.player = agar.player.filter(p => !p.dead);
+
+  agar.peak = Math.max(agar.peak, agarPlayerMass());
+  statusEl.textContent = "質量 " + Math.round(agarPlayerMass());
+  if (agar.player.length === 0) agarGameOver();
+}
+
+function agarToScreen(x, y, s, px, py) { return [agar.W / 2 + (x - px) * s, agar.H / 2 + (y - py) * s]; }
+
+function agarBlob(ctx, x, y, r, ring, ringW) {   // 貼圓形豆子並描外框
+  if (agarBead) ctx.drawImage(agarBead, x - r, y - r, 2 * r, 2 * r);
+  else { ctx.fillStyle = ring; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); }
+  if (ringW) {
+    ctx.lineWidth = ringW; ctx.strokeStyle = ring;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.stroke();
+  }
+}
+
+function agarDraw() {
+  const ctx = agar.ctx, s = agarScale(), [px, py] = agarPlayerCenter();
+  ctx.fillStyle = "#20222c";
+  ctx.fillRect(0, 0, agar.W, agar.H);
+  // 網格
+  ctx.strokeStyle = "rgba(255,255,255,.05)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const [ox, oy] = agarToScreen(0, 0, s, px, py);
+  for (let g = 0; g <= agar.world; g += 80) {
+    const x = ox + g * s; if (x >= 0 && x <= agar.W) { ctx.moveTo(x, 0); ctx.lineTo(x, agar.H); }
+    const y = oy + g * s; if (y >= 0 && y <= agar.H) { ctx.moveTo(0, y); ctx.lineTo(agar.W, y); }
+  }
+  ctx.stroke();
+  // 食物（小豆子，不描邊省效能）
+  for (const f of agar.food) {
+    const [x, y] = agarToScreen(f.x, f.y, s, px, py), r = agarR(f.mass) * s;
+    if (x < -r || x > agar.W + r || y < -r || y > agar.H + r) continue;
+    agarBlob(ctx, x, y, r, f.color, 0);
+  }
+  // 細胞與病毒依質量排序後一起畫：質量小的在下、大的在上（病毒也一視同仁）
+  const drawList = agar.cells.concat(agar.player);
+  for (const v of agar.viruses) drawList.push(v);
+  drawList.sort((a, b) => a.mass - b.mass);
+  for (const e of drawList) {
+    const [x, y] = agarToScreen(e.x, e.y, s, px, py), r = agarR(e.mass) * s;
+    if (x < -r || x > agar.W + r || y < -r || y > agar.H + r) continue;
+    if (e.ang !== undefined) {                     // 病毒（旋轉的花）
+      ctx.save(); ctx.translate(x, y); ctx.rotate(e.ang);
+      if (flowerImg.complete) ctx.drawImage(flowerImg, -r, -r, 2 * r, 2 * r);
+      else { ctx.fillStyle = "#3fbf6f"; ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.283); ctx.fill(); }
+      ctx.restore();
+    } else {                                        // 一般細胞 / 玩家
+      agarBlob(ctx, x, y, r, e.isPlayer ? "#ffffff" : e.color, Math.max(2, r * 0.12));
+    }
+  }
+}
+
+function agarLoop(now) {
+  if (!agar.running) return;
+  const dt = Math.min(2.5, (now - agar.last) / 16.667);
+  agar.last = now;
+  agarUpdate(dt, now);
+  agarDraw();
+  if (agar.running) agar.raf = requestAnimationFrame(agarLoop);
+}
+
+function agarGameOver() {
+  agar.running = false;
+  const t = stopTimer();
+  winEl.innerHTML =
+    "<div>被吃掉了 😵</div>" +
+    "<span style='font-size:22px'>最高質量 " + Math.round(agar.peak) + "</span>" +
+    "<span style='font-size:22px'>存活 " + fmt(t) + "</span>" +
+    "<span style='font-size:16px;opacity:.7'>按「新遊戲」再玩一次</span>";
+  winEl.style.display = "flex";
+}
+
 /* ---------- 控制列 ---------- */
 document.getElementById("mode-jigsaw").addEventListener("click", () => startMode("jigsaw"));
 document.getElementById("mode-slide").addEventListener("click", () => startMode("slide"));
 document.getElementById("mode-robots").addEventListener("click", () => startMode("robots"));
+document.getElementById("mode-agar").addEventListener("click", () => startMode("agar"));
 document.getElementById("action").addEventListener("click", () => {
   if (mode === "robots") rrNewGame();
   else startMode(mode);
@@ -782,6 +1161,11 @@ document.querySelectorAll("#rr-controls [data-dir]").forEach(b =>
   }));
 document.querySelectorAll("#rr-controls [data-sel]").forEach(b =>
   b.addEventListener("click", () => rrSelect(+b.dataset.sel)));
+
+// 種豆模式：空白鍵分裂（攔截預設，避免捲動或誤觸按鈕）
+document.addEventListener("keydown", (e) => {
+  if (mode === "agar" && (e.code === "Space" || e.key === " ")) { e.preventDefault(); agarSplit(); }
+});
 
 // 機器人模式鍵盤操作
 document.addEventListener("keydown", (e) => {
